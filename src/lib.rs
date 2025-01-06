@@ -14,10 +14,94 @@
 // limitations under the License.
 //
 
-use std::{collections::HashMap, time::Duration};
-use anyhow::Result;
-use stof::{Format, SDoc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use anyhow::{anyhow, Result};
+use stof::{Format, Library, SDoc, SVal};
 use ureq::{Agent, AgentBuilder};
+
+
+/// Stof GitHub Library.
+#[derive(Default)]
+pub struct GitHubLibrary;
+impl Library for GitHubLibrary {
+    fn scope(&self) -> String {
+        "GitHub".to_string()
+    }
+
+    fn call(&self, _pid: &str, doc: &mut SDoc, name: &str, parameters: &mut Vec<SVal>) -> Result<SVal> {
+        match name {
+            // Allows users to add GitHub repositories as formats at runtime
+            // Recommended to use this in an #[init] function
+            // Will add the format as available in every Stof scope
+            "addFormat" => {
+                // GitHub.addFormat(owner: str, repo: str, repo_id: str, headers: vec)
+                // Parameters:
+                // - owner (REQUIRED)
+                // - repo (REQUIRED)
+                // - repo_id (OPTIONAL) default is to use 'repo' for the format repository ID (see format implementation below)
+                // - headers (OPTIONAL) additional headers to add to this format (see format implementation below)
+                if parameters.len() >= 2 {
+                    let owner = parameters[0].to_string();
+                    let repo = parameters[1].to_string();
+                    let mut repo_id = repo.clone();
+                    let mut headers: Vec<(String, String)> = Vec::new();
+
+                    if parameters.len() > 2 {
+                        match &parameters[2] {
+                            SVal::Array(vals) => {
+                                for val in vals {
+                                    match val {
+                                        SVal::Tuple(tup) => {
+                                            if tup.len() == 2 {
+                                                headers.push((tup[0].to_string(), tup[1].to_string()));
+                                            }
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            SVal::String(id) => {
+                                repo_id = id.to_owned();
+                            },
+                            _ => {}
+                        }
+                    }
+                    if parameters.len() > 3 {
+                        match &parameters[3] {
+                            SVal::Array(vals) => {
+                                for val in vals {
+                                    match val {
+                                        SVal::Tuple(tup) => {
+                                            if tup.len() == 2 {
+                                                headers.push((tup[0].to_string(), tup[1].to_string()));
+                                            }
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            SVal::String(id) => {
+                                repo_id = id.to_owned();
+                            },
+                            _ => {}
+                        }
+                    }
+
+                    let mut format = GitHubFormat::new(&repo, &owner);
+                    format.repo_id = repo_id;
+                    for (key, value) in headers {
+                        format.headers.insert(key, value);
+                    }
+                    doc.load_format(Arc::new(format));
+                    return Ok(SVal::Void);
+                }
+                return Err(anyhow!("GitHub.addFormat requires at least 2 parameters: GitHub.addFormat(owner: str, repo: str, repo_id?: str, headers?: vec)"));
+            },
+            _ => {}
+        }
+        Err(anyhow!("Could not execute '{}' in the GitHub library", name))
+    }
+}
 
 
 /// Stof GitHub Format.
@@ -95,15 +179,23 @@ impl Format for GitHubFormat {
 mod tests {
     use std::sync::Arc;
     use stof::SDoc;
-    use crate::GitHubFormat;
+    use crate::GitHubLibrary;
 
     #[test]
     fn test() {
         let mut doc = SDoc::default();
-        doc.load_format(Arc::new(GitHubFormat::new("stof", "dev-formata-io"))); // github:stof
+        doc.load_lib(Arc::new(GitHubLibrary::default()));
+        //doc.load_format(Arc::new(GitHubFormat::new("stof", "dev-formata-io"))); // github:stof
 
         doc.string_import("main", "stof", r#"
-            
+
+            init_stof_github: {
+                // This is a block expression that gets executed while parsing this value - not an object!
+                // Will add the 'github:stof' format for usage in our import statement, because parsing happens top down
+                GitHub.addFormat('dev-formata-io', 'stof');
+                return true;
+            }
+
             import github:stof "web/deno.json"; // Will import deno.json using the "json" format into "root"
 
             #[test('@formata/stof')]
@@ -114,6 +206,11 @@ mod tests {
             #[test('Apache-2.0')]
             fn license(): str {
                 return self.license;
+            }
+
+            #[test]
+            fn init() {
+                assert(self.init_stof_github);
             }
 
         "#, "").unwrap();
