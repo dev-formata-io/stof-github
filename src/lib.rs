@@ -15,8 +15,8 @@
 //
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use anyhow::{anyhow, Result};
-use stof::{Format, Library, SDoc, SVal};
+use anyhow::Result;
+use stof::{lang::SError, Format, Library, SDoc, SVal};
 use ureq::{Agent, AgentBuilder};
 
 
@@ -28,7 +28,7 @@ impl Library for GitHubLibrary {
         "GitHub".to_string()
     }
 
-    fn call(&self, _pid: &str, doc: &mut SDoc, name: &str, parameters: &mut Vec<SVal>) -> Result<SVal> {
+    fn call(&self, pid: &str, doc: &mut SDoc, name: &str, parameters: &mut Vec<SVal>) -> Result<SVal, SError> {
         match name {
             // Allows users to add GitHub repositories as formats at runtime
             // Recommended to use this in an #[init] function
@@ -95,11 +95,11 @@ impl Library for GitHubLibrary {
                     doc.load_format(Arc::new(format));
                     return Ok(SVal::Void);
                 }
-                return Err(anyhow!("GitHub.addFormat requires at least 2 parameters: GitHub.addFormat(owner: str, repo: str, repo_id?: str, headers?: vec)"));
+                return Err(SError::custom(pid, &doc, "GitHubLibError", "GitHub.addFormat requires at least 2 parameters: GitHub.addFormat(owner: str, repo: str, repo_id?: str, headers?: vec)"));
             },
             _ => {}
         }
-        Err(anyhow!("Could not execute '{}' in the GitHub library", name))
+        Err(SError::custom(pid, &doc, "GitHubLibError", &format!("'{}' is not a function in the GitHub library", name)))
     }
 }
 
@@ -168,9 +168,16 @@ impl Format for GitHubFormat {
     /// The GitHub format only allows a file import.
     /// Gets the contents of the file at a path in this GitHub repo, then imports it as a string using the file extension.
     /// Will error if a Format with the requested file extension is not available in the doc.
-    fn file_import(&self, pid: &str, doc: &mut SDoc, _format: &str, full_path: &str, extension: &str, as_name: &str) -> Result<()> {
-        let contents = self.get(full_path)?;
-        doc.string_import(pid, extension, &contents, as_name)
+    fn file_import(&self, pid: &str, doc: &mut SDoc, format: &str, full_path: &str, extension: &str, as_name: &str) -> Result<(), SError> {
+        let res = self.get(full_path);
+        match res {
+            Ok(contents) => {
+                doc.string_import(pid, extension, &contents, as_name)
+            },
+            Err(error) => {
+                Err(SError::fmt(pid, &doc, format, &format!("error getting file contents from GitHub: {}", error.to_string())))
+            }
+        }
     }
 }
 
